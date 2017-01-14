@@ -16,13 +16,14 @@ namespace QuantConnect.Algorithm.Me
         private Symbol spy = QuantConnect.Symbol.Create("SPY", SecurityType.Equity, Market.USA);
         SimpleMovingAverage spySma = null;
 
+        //QuantConnect.ToolBox.exe "XLI,XLB,XLE,XLV,XLP,XLU,XLF,XLY,XLK,SPY" Daily 19980101 20161231
         List<string> SectorEtfSymbols = new List<string> { "XLI", "XLB", "XLE", "XLV", "XLP", "XLU", "XLF", "XLY", "XLK" };
         List<SymbolData> SectorEtfs = new List<SymbolData>();
 
         public override void Initialize()
         {
             SetCash(10000);
-            SetStartDate(2002, 1, 1);
+            SetStartDate(2000, 1, 1);
             SetEndDate(2016, 12, 31);
 
             AddEquity(spy.ID.Symbol, Resolution.Daily);
