@@ -9,6 +9,7 @@ namespace QuantConnect.Algorithm.Me
 {
     public class FaberMonthlySectorRotation : QCAlgorithm
     {
+        bool extraCharting = false;
         DateTime LastRotationTime = new DateTime(1980, 1, 1);
         TimeSpan RotationInterval = TimeSpan.FromDays(30);
 
@@ -21,13 +22,19 @@ namespace QuantConnect.Algorithm.Me
         public override void Initialize()
         {
             SetCash(10000);
-            SetStartDate(2012, 1, 3);
+            SetStartDate(2002, 1, 1);
             SetEndDate(2016, 12, 31);
 
-            SetWarmUp(TimeSpan.FromDays(300));
-
             AddEquity(spy.ID.Symbol, Resolution.Daily);
-            spySma = SMA(spy, 300, Resolution.Daily);
+            spySma = SMA(spy, 200, Resolution.Daily);
+
+            var history = History(spy, 201, Resolution.Daily);
+
+            foreach (TradeBar tradeBar in history)
+            {
+                spySma.Update(tradeBar.EndTime, tradeBar.Close);
+            }
+
             SetBenchmark("SPY");
 
             foreach (var sym in SectorEtfSymbols)
@@ -35,7 +42,14 @@ namespace QuantConnect.Algorithm.Me
                 //Symbol symbol = QuantConnect.Symbol.Create(sym, SecurityType.Equity, Market.USA);
 
                 AddSecurity(SecurityType.Equity, sym, Resolution.Daily);
-                var threeMonthPerformance = MOM(sym, 90, Resolution.Daily);
+                var threeMonthPerformance = MOM(sym, 60, Resolution.Daily);
+
+                history = History(sym, 61, Resolution.Daily);
+
+                foreach (TradeBar tradeBar in history)
+                {
+                    threeMonthPerformance.Update(tradeBar.EndTime, tradeBar.Close);
+                }
 
                 SectorEtfs.Add(new SymbolData
                 {
@@ -45,18 +59,21 @@ namespace QuantConnect.Algorithm.Me
             }
 
             #region Charting
-            Chart stockPlot = new Chart("SPY");
+            if (extraCharting)
+            {
+                Chart stockPlot = new Chart("SPY");
 
-            Series spyPriceSeries = new Series("Price", SeriesType.Line, 0);
-            stockPlot.AddSeries(spyPriceSeries);
+                Series spyPriceSeries = new Series("Price", SeriesType.Line, 0);
+                stockPlot.AddSeries(spyPriceSeries);
 
-            //Series spySmaSeries = new Series("SMA", SeriesType.Line, 0);
-            //stockPlot.AddSeries(spySmaSeries);
+                Series spySmaSeries = new Series("SMA", SeriesType.Line, 0);
+                stockPlot.AddSeries(spySmaSeries);
 
-            //Series buyingAllowedSeries = new Series("Buying Allowed", SeriesType.Line, 1);
-            //stockPlot.AddSeries(buyingAllowedSeries);
+                Series buyingAllowedSeries = new Series("Buying Allowed", SeriesType.Line, 1);
+                stockPlot.AddSeries(buyingAllowedSeries);
 
-            AddChart(stockPlot);
+                AddChart(stockPlot); 
+            }
             #endregion
         }
 
@@ -65,9 +82,14 @@ namespace QuantConnect.Algorithm.Me
             if (!this.IsWarmingUp)
             {
                 TradeBar spyBar = data[spy];
-                Plot("SPY", "Price", data[spy].Close);
-                //Plot("SPY", "SMA", spySma);
-                //Plot("SPY", "Buying Allowed", data[spy].Close > spySma ? 1 : -1);
+
+                if (extraCharting)
+                {
+                    Plot("SPY", "Price", data[spy].Close);
+                    Plot("SPY", "SMA", spySma);
+                    Plot("SPY", "Buying Allowed", data[spy].Close > spySma ? 1 : -1); 
+                }
+
                 var delta = Time.Subtract(LastRotationTime);
                 if (delta > RotationInterval)
                 {
@@ -75,6 +97,8 @@ namespace QuantConnect.Algorithm.Me
 
                     if (data[spy].Close > spySma)
                     {
+                        Log(String.Format("Buying: {0}", Time.ToShortDateString()));
+
                         List<String> topPerformers = this.SectorEtfs.OrderByDescending(x => x.ThreeMonthPerformance).Select(x => x.Symbol).Take(3).ToList();
 
                         foreach (Symbol x in Portfolio.Keys)
