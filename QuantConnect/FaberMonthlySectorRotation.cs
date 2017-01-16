@@ -26,7 +26,7 @@ namespace QuantConnect.Algorithm.Me
         public override void Initialize()
         {
             SetCash(10000);
-            SetStartDate(2010, 1, 1);
+            SetStartDate(2011, 1, 1);
             SetEndDate(2016, 12, 31);
 
             AddEquity(spy.ID.Symbol, Resolution.Minute);
