@@ -10,7 +10,7 @@ namespace QuantConnect.Algorithm.Me
     public class FaberMonthlySectorRotation : QCAlgorithm
     {
         #region Properties
-        bool extraCharting = false;
+        bool extraCharting = true;
         int currentMonth = -1;
         DateTime lastProcessedDate = DateTime.MinValue;
 
@@ -29,7 +29,7 @@ namespace QuantConnect.Algorithm.Me
             SetStartDate(2011, 1, 1);
             SetEndDate(2016, 12, 31);
 
-            AddEquity(spy.ID.Symbol, Resolution.Minute);
+            AddEquity(spy.ID.Symbol, Resolution.Daily);
             spySma = SMA(spy, 200, Resolution.Daily);
 
             var history = History(spy, 201, Resolution.Daily);
@@ -45,7 +45,7 @@ namespace QuantConnect.Algorithm.Me
             {
                 //Symbol symbol = QuantConnect.Symbol.Create(sym, SecurityType.Equity, Market.USA);
 
-                AddSecurity(SecurityType.Equity, sym, Resolution.Minute);
+                AddSecurity(SecurityType.Equity, sym, Resolution.Daily);
                 var threeMonthPerformance = MOMP(sym, 60, Resolution.Daily);
 
                 history = History(sym, 61, Resolution.Daily);
@@ -62,7 +62,7 @@ namespace QuantConnect.Algorithm.Me
                 });
             }
 
-            Schedule.On(DateRules.EveryDay("SPY"), TimeRules.AfterMarketOpen(spy, 1), () =>
+            Schedule.On(DateRules.EveryDay(spy), TimeRules.AfterMarketOpen(spy, 1), () =>
             {
                 Allocate();
             });
@@ -100,14 +100,13 @@ namespace QuantConnect.Algorithm.Me
 
             if (currentMonth != Time.Month)
             {
-                Log(String.Format("Allocate: {0}", Time.ToShortDateString()));
-
                 TradeBar spyLast = History(spy, 1, Resolution.Daily).Last();
 
                 currentMonth = Time.Month;
 
                 if (spyLast.Close > spySma)
                 {
+                    //Log("Buy");
                     List<String> topPerformers = this.SectorEtfs.OrderByDescending(x => x.ThreeMonthPerformance).Select(x => x.Symbol).Take(3).ToList();
 
                     foreach (Symbol x in Portfolio.Keys)
@@ -125,6 +124,7 @@ namespace QuantConnect.Algorithm.Me
                 }
                 else
                 {
+                    //Log("Sell");
                     Liquidate();
                 }
             }
@@ -133,7 +133,7 @@ namespace QuantConnect.Algorithm.Me
         #region OnData
         public void OnData(TradeBars data)
         {
-            
+
         }
         #endregion
 
