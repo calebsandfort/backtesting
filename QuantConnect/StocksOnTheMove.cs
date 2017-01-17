@@ -14,7 +14,7 @@ namespace QuantConnect.Algorithm.CSharp
     {
         bool webIde = false;
         private Symbol spy = QuantConnect.Symbol.Create("SPY", SecurityType.Equity, Market.USA);
-        private MomentumPercent spyMomp = null;
+        private MomentumPercent spyMom = null;
         private const int NumberOfSymbolsCoarse = 50;
         private const int NumberOfSymbolsFine = 2;
         int count = 0;
@@ -24,24 +24,17 @@ namespace QuantConnect.Algorithm.CSharp
         {
             UniverseSettings.Resolution = Resolution.Daily;
 
-            SetStartDate(2016, 01, 01);
+            SetStartDate(2012, 01, 01);
             SetEndDate(2016, 12, 31);
             SetCash(20000);
 
             AddEquity(spy.ID.Symbol, webIde ? Resolution.Minute : Resolution.Daily);
-            spyMomp = MOMP(spy, 60);
+            spyMom = MOMP(spy, 3);
 
-            //var history = History(spy, 61, Resolution.Daily);
-
-            //foreach (TradeBar tradeBar in history)
-            //{
-            //    spyMomp.Update(tradeBar.EndTime, tradeBar.Close);
-            //}
-
-            //if (webIde)
-            //{
-            //    AddUniverse(CoarseSelectionFunction);
-            //}
+            if (webIde)
+            {
+                AddUniverse(CoarseSelectionFunction);
+            }
 
             Schedule.On(DateRules.Every(DayOfWeek.Wednesday), TimeRules.At(9, 31), () =>
             {
@@ -81,17 +74,14 @@ namespace QuantConnect.Algorithm.CSharp
 
         public void OnData(TradeBars data)
         {
-            if (spyMomp.IsReady)
-            {
-                Log(String.Format("Ready: {0}", Time.ToShortDateString()));
-            }
+
         }
 
         public override void OnSecuritiesChanged(SecurityChanges changes)
         {
             if (changes.AddedSecurities.Count > 0)
             {
-                foreach(Security security in changes.AddedSecurities)
+                foreach (Security security in changes.AddedSecurities)
                 {
                     stocks.AddOrUpdate(security.Symbol, security.Symbol.ID.Symbol);
                 }
