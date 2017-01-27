@@ -36,8 +36,7 @@ def initialize(context):
     context.opt_pass_count = 0
     context.run_count = 0
     context.eps_vals = []
-    context.portfolio_value_multiplier = 1.0
-    context.spy_position_allocation = 0.0
+    context.RISK_LEVEL = 1.0
     context.is_trading_day = False
     
     #schedule_function(queues,   date_rules.week_start(1), time_rules.market_open(minutes=60))
@@ -173,7 +172,7 @@ def trade(context, data):
         return
     
     for i,stock in enumerate(context.stocks):
-        place_order(context, data, stock,allocation[i]*.7)
+        place_order(context, data, stock,allocation[i]*.7*context.RISK_LEVEL)
     # log.info (", ".join(["%s %0.3f" % (stock.symbol, allocation[i]) for i,stock in enumerate(context.stocks)]))
     # log.info("*************************************************************")
     # log.info("\n")
@@ -203,13 +202,13 @@ def allocSPY (context, data):
     #spy_higher_then_Xdays_back
     if spy_change_logic(context, data, context.spy) :
         place_order(context, data, context.shortSpy,0)
-        place_order(context, data, context.spy,(0.3))    
+        place_order(context, data, context.spy,(0.3*context.RISK_LEVEL))    
     else:
         short_size = get_holding_size(context, data, context.spy) + get_holding_size(context, data, context.bullish_stock) + (context.portfolio.cash/context.portfolio.portfolio_value)
         
         place_order(context, data, context.spy,0.0)
         # place_order(context, data, context.bullish_stock,0.0)
-        place_order(context, data, context.shortSpy,0.3)
+        place_order(context, data, context.shortSpy,0.3*context.RISK_LEVEL)
         
     # if context.small_cap_stock in context.portfolio.positions and not spy_change_logic(context, data, context.small_cap_stock):
     #     order_target_percent(context.small_cap_stock,0.0)
