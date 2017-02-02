@@ -1,30 +1,26 @@
 import numpy as np
 import scipy
 import pandas as pd
+import time  
+from datetime import datetime  
 from pytz import timezone
+
 def initialize(context):
-    #set_slippage(slippage.FixedSlippage(spread=0))
+    set_slippage(slippage.FixedSlippage(spread=0))
+    #set_slippage(slippage.VolumeShareSlippage(volume_limit=1, price_impact=0))
     
-    context.bullish_stock = sid(37514) #UPRO
+    context.bullish_stock = sid(39214) #TQQQ
     context.bearish_stock = sid(38294) #TMF
-    context.small_cap_stock = sid(37515) #TNA
-    context.mid_cap_stock = sid(21507) #IJH
+    context.small_cap_stock = sid(21508) #IJR
+    context.mid_cap_stock = sid(21507) #IJH then SCHM
     context.vxx = sid(38054) #VXX -> Vix Bull
     context.xiv = sid(40516) #XIV -> VIX Bear
-    
-    context.spy = sid(38533) #UPRO
-    context.shortSpy = sid(23921) #TLT -> Treasury                  EDV: 22887
     
     context.stocks = [context.bullish_stock,
                       context.bearish_stock,
                       context.small_cap_stock,
                       context.mid_cap_stock,
                       context.xiv]
-
-    schedule_function(func = allocVOL, date_rule = date_rules.every_day(), time_rule = time_rules.market_open(minutes = 15))
-   
-    schedule_function(func = allocSPY, date_rule = date_rules.every_day(), time_rule = time_rules.market_close(minutes = 15))
-    context.track_orders = 1    # toggle on|off
     context.n = 0
     context.s = np.zeros_like(context.stocks)
     context.x0 = np.zeros_like(context.stocks)
@@ -36,55 +32,72 @@ def initialize(context):
     context.opt_pass_count = 0
     context.run_count = 0
     context.eps_vals = []
+    
+    context.weekly_buys = {}
+    context.spy_buys = {}
+    
     context.RISK_LEVEL = 1.0
-    context.is_trading_day = False
+    context.PIGGY_BANK = 500
+    context.is_first_of_week = False   
+    context.is_trading_day = False   
     
-    #schedule_function(queues,   date_rules.week_start(1), time_rules.market_open(minutes=60))
-    schedule_function(set_is_trading_day,date_rules.every_day(),time_rules.market_open(minutes=60))
-    schedule_function(allocate,date_rules.every_day(),time_rules.market_open(minutes=60))
+    schedule_function(set_is_first_of_week,date_rules.week_start(),time_rules.market_open())
+    schedule_function(set_is_trading_day,date_rules.week_start(1),time_rules.market_open())
     
-    schedule_function(trade,date_rules.week_start(days_offset=1),time_rules.market_open(minutes=60))
+    schedule_function(func = allocVOL, date_rule = date_rules.every_day(), time_rule = time_rules.market_open(minutes = 15))  
+    
+    schedule_function(allocate,date_rules.every_day(),time_rules.market_open(minutes=60))    
+    schedule_function(trade_weekly_sells,date_rules.week_start(1),time_rules.market_open(minutes=60))  
+    
+    for i in range(0, 13):
+        offset = 60 + (i * 5)
+        schedule_function(trade_weekly_buys,date_rules.week_start(1),time_rules.market_open(minutes=offset))
+
+    schedule_function(func = trade_spy_sell, date_rule = date_rules.every_day(), time_rule = time_rules.market_close(minutes = 20))
+    schedule_function(func = trade_spy_buy, date_rule = date_rules.every_day(), time_rule = time_rules.market_close(minutes = 15))
+    schedule_function(func = trade_spy_buy, date_rule = date_rules.every_day(), time_rule = time_rules.market_close(minutes = 10))
+    schedule_function(func = trade_spy_buy, date_rule = date_rules.every_day(), time_rule = time_rules.market_close(minutes = 5))
     
     set_long_only()
     
     #Reporting
-    context.stocks_pl = {}
-    context.stocks_pl[context.bullish_stock] = 0.0
-    context.stocks_pl[context.bearish_stock] = 0.0
-    context.stocks_pl[context.small_cap_stock] = 0.0
-    context.stocks_pl[context.mid_cap_stock] = 0.0
-    context.stocks_pl[context.xiv] = 0.0
-    context.stocks_pl[context.shortSpy] = 0.0
+    context.total_trades = 0
     
-    schedule_function(record_leverage, date_rules.every_day())
-    # schedule_function(final_reporting, date_rules.every_day())
-   
+    schedule_function(record_leverage, date_rules.every_day(), time_rules.market_close())
+    schedule_function(final_reporting, date_rules.every_day(), time_rules.market_close())
+
+def set_is_first_of_week(context, data):
+    context.is_first_of_week = True
+
 def set_is_trading_day(context, data):
     context.is_trading_day = True
 
 def record_leverage(context, data):
-    record(leverage = context.account.leverage)
-    record(mx_lvrg = context.mx_lvrg)
-    context.mx_lvrg = 0
+    #record(leverage = context.account.leverage)
+    #record(mx_lvrg = context.mx_lvrg)
+    #record(cash = 1 if context.portfolio.cash < 0 else 0)
+    #record(total_trades = context.total_trades)
+
+    #context.mx_lvrg = 0
     context.is_trading_day = False
+    context.is_first_of_week = False
   
 def final_reporting(context, data):
-    if get_datetime().month == 1 and get_datetime().day == 25 and get_datetime().year == 2017:
-        log.info("\n%s" % '\n'.join(["%s: $%.2f " % (x.symbol, context.stocks_pl[x]) for x in context.stocks_pl]))
+    if len(context.weekly_buys) > 0 or len(context.spy_buys) > 0:
+        log.info("Open Buy Orders")
     
-def handle_data(context, data):  
-    if 'mx_lvrg' not in context:             # Max leverage  
-        context.mx_lvrg = 0                  # Init this instead in initialize() for better efficiency  
-    if context.account.leverage > context.mx_lvrg:  
-        context.mx_lvrg = context.account.leverage  
-        record(mx_lvrg = context.mx_lvrg)
-
+    if is_date(2017, 1, 25):
+        log.info("Total trades: %d" % context.total_trades)
+    
 def place_order(context, data, stock, percent):
-    # shares = get_shares(context, data, stock, percent)
+    shares = get_shares(context, data, stock, percent)
+    current_shares = 0
     
-    # if stock in context.portfolio.positions and shares == 0:
-    #     pos = context.portfolio.positions[stock]
-    #     context.stocks_pl[stock] += ((pos.amount * pos.last_sale_price) - (pos.amount * pos.cost_basis))
+    if stock in context.portfolio.positions:
+        current_shares = context.portfolio.positions[stock].amount
+        
+    if shares != current_shares:
+        context.total_trades += 1
     
     order_target_percent(stock, percent)
     
@@ -93,15 +106,28 @@ def get_shares(context, data, stock, percent):
     shares = int((context.portfolio.portfolio_value * percent)/current_price)
     return shares
  
-def get_holding_size(context, data, stock):
+def get_position_size(context, data, stock):
     if stock not in context.portfolio.positions:
         return 0.0
     
     pos = context.portfolio.positions[stock]
     
-    return context.portfolio.portfolio_value / (pos.amount * pos.last_sale_price)
+    return (pos.amount * pos.last_sale_price) / context.portfolio.portfolio_value
+
+def get_target_position_size(context, data, position_size):
+    return ((context.portfolio.portfolio_value - context.PIGGY_BANK)/context.portfolio.portfolio_value)*position_size*context.RISK_LEVEL
+
+def get_net_shares(context, data, stock, target_size):
+    existing_shares = 0
     
-def allocate(context, data):
+    if stock in context.portfolio.positions:
+        existing_shares = context.portfolio.positions[stock].amount
+        
+    target_shares = int((context.portfolio.portfolio_value * target_size) / data.current(stock, "price"))
+    
+    return target_shares - existing_shares
+    
+def allocate(context, data):     
     context.run_count += 1
     prices = data.history(context.stocks, 'price', 17*390,'1m')
     ret = prices.pct_change()[1:].as_matrix(context.stocks)
@@ -109,9 +135,6 @@ def allocate(context, data):
     ret_std = prices.pct_change().std()
     ret_norm = ret_mean/ret_std
     ret_norm = ret_norm.as_matrix(context.stocks)
-#
-#    alternate eps assignment method
-#
     ret_norm_max = np.max(ret_norm)
     eps_factor = 0.9 if ret_norm_max >0 else 1.0
     context.eps = eps_factor*ret_norm_max
@@ -144,9 +167,9 @@ def allocate(context, data):
             if denom > 0:
                 allocation = allocation/denom 
                 
-            msg = "{0} runs, {1} SLSQP passes, {2} constraints passed".format(
-                context.run_count, context.opt_pass_count,
-                context.valid_constraint_count)
+            # msg = "{0} runs, {1} SLSQP passes, {2} constraints passed".format(
+            #     context.run_count, context.opt_pass_count,
+            #     context.valid_constraint_count)
             #if(context.run_count>1000): log.info(msg)
         else:
             pass
@@ -156,9 +179,8 @@ def allocate(context, data):
         # log.info("SLSQP fail, SLSQP status = {0}".format(res.status))
     context.n += 1
     context.s += allocation
-#
-#---------- end of debugging code
-def trade(context, data):
+
+def trade_weekly_sells(context, data):
     if context.n > 0:
         allocation = context.s/context.n
     else:
@@ -168,17 +190,41 @@ def trade(context, data):
     context.s = np.zeros_like(context.stocks)
     context.x0 = allocation
     
-    if get_open_orders():
+    if is_date(2013, 12, 3) or get_open_orders():
         return
     
     for i,stock in enumerate(context.stocks):
-        place_order(context, data, stock,allocation[i]*.7*context.RISK_LEVEL)
+        if is_date(2011, 3, 1) and stock is context.mid_cap_stock:
+            context.mid_cap_stock = sid(40709)
+            context.stocks[i] = context.mid_cap_stock
+            place_order(context, data, stock, 0)
+            context.weekly_buys[context.mid_cap_stock] = get_target_position_size(context, data, allocation[i])
+        else:
+            net_shares = get_net_shares(context, data, stock, get_target_position_size(context, data, allocation[i]))
+            
+            if net_shares < 0:
+                place_order(context, data, stock, get_target_position_size(context, data, allocation[i]))
+            elif net_shares > 0:
+                context.weekly_buys[stock] = get_target_position_size(context, data, allocation[i])
+                       
     # log.info (", ".join(["%s %0.3f" % (stock.symbol, allocation[i]) for i,stock in enumerate(context.stocks)]))
     # log.info("*************************************************************")
     # log.info("\n")
 
+def trade_weekly_buys(context, data):
+    if len(context.weekly_buys) is 0 or (len(context.weekly_buys) > 0 and get_open_orders()):
+        #log.info("trade_weekly_buys: Open Sell Orders")
+        return
+    
+    for stock in context.weekly_buys:
+        place_order(context, data, stock, context.weekly_buys[stock])
+    
+    context.weekly_buys = {}
     
 def allocVOL(context, data):    
+    if context.is_trading_day:
+        return
+    
     vxx = context.vxx
     xiv = context.xiv
     WFV_limit= 14 #(Kory used 14 but it becomes a bit too agressive)
@@ -191,28 +237,54 @@ def allocVOL(context, data):
     #William's VIX Fix indicator a.k.a. the Synthetic VIX
     WVF = ((vxx_highest - vxx_lows)/(vxx_highest)) * 100
 
+    context.vxx_price = data.current(vxx, "price")
+    context.vxx_wfv = WVF[-1]
+    
     #Sell position when WVF crosses under 14
     if(WVF[-2] > WFV_limit and WVF[-1] <= WFV_limit):
-        order_target_percent(xiv, 0.00) 
+        order_target_percent(xiv, 0.00)   
 
-def allocSPY (context, data):  
-    # if context.is_trading_day:
-    #     return
+def trade_spy_sell (context, data):  
+    if context.is_trading_day or context.is_first_of_week:
+        return
     
-    #spy_higher_then_Xdays_back
-    if spy_change_logic(context, data, context.spy) :
-        place_order(context, data, context.shortSpy,0)
-        place_order(context, data, context.spy,(0.3*context.RISK_LEVEL))    
-    else:
-        short_size = get_holding_size(context, data, context.spy) + get_holding_size(context, data, context.bullish_stock) + (context.portfolio.cash/context.portfolio.portfolio_value)
+    bullish_size = get_position_size(context, data, context.bullish_stock)
+    bearish_size = get_position_size(context, data, context.bearish_stock)
+
+    spy_change = spy_change_logic(context, data, context.bullish_stock)
+    
+    if (spy_change and bearish_size > bullish_size) or (not spy_change and bullish_size > bearish_size):
+        bearish_net_shares = get_net_shares(context, data, context.bearish_stock, bullish_size)
+        bullish_net_shares = get_net_shares(context, data, context.bullish_stock, bearish_size)
         
-        place_order(context, data, context.spy,0.0)
-        # place_order(context, data, context.bullish_stock,0.0)
-        place_order(context, data, context.shortSpy,0.3*context.RISK_LEVEL)
+        if bearish_net_shares > 0 and bullish_net_shares < 0:
+            place_order(context, data, context.bullish_stock, bearish_size)
+            context.spy_buys[context.bearish_stock] = bullish_size
+        elif bearish_net_shares < 0 and bullish_net_shares > 0:
+            place_order(context, data, context.bearish_stock, bullish_size)
+            context.spy_buys[context.bullish_stock] = bearish_size
+        elif (bearish_net_shares < 0 and bullish_net_shares < 0) or (bearish_net_shares < 0 and bullish_net_shares < 0):
+            place_order(context, data, context.bearish_stock, bullish_size)
+            place_order(context, data, context.bullish_stock, bearish_size) 
+        elif bearish_net_shares == 0 and bullish_net_shares != 0:
+            place_order(context, data, context.bullish_stock, bearish_size)
+        elif bearish_net_shares != 0 and bullish_net_shares == 0:
+            place_order(context, data, context.bearish_stock, bullish_size)
         
-    # if context.small_cap_stock in context.portfolio.positions and not spy_change_logic(context, data, context.small_cap_stock):
-    #     order_target_percent(context.small_cap_stock,0.0)
-      
+def trade_spy_buy (context, data):  
+    if len(context.spy_buys) == 0 or (len(context.spy_buys) > 0 and get_open_orders()):
+        #log.info("trade_spy_buy: Open Sell Orders")
+        return
+    
+    for stock in context.spy_buys:
+        place_order(context, data, stock, context.spy_buys[stock])
+    
+    context.spy_buys = {}
+        
+def is_date(year, month, day):
+    date = get_datetime()
+    return date.year == year and date.month == month and date.day == day
+
 def spy_change_logic(context, data, stock):
     ####Inputs Tab Criteria.
     period      = 28 #"LookBack Period Standard Deviation High")
@@ -226,20 +298,15 @@ def spy_change_logic(context, data, stock):
     mtLB    = 14 # Medium-Term Look Back Current Bar Has To Close Below This Value OR Long Term--Default=14")
     Str     = 3  # Entry Price Action Strength--Close > X Bars Back---Default=3")
 
-    spy_low = data.history(stock, "low", 2*period + 2, "1d")
-    spy_high = data.history(stock, "high", 2*period + 2, "1d")
     spy_close = data.history(stock, "close", 2*period + 2, "1d")
     spy_prices = data.history(stock, "price", 2*period + 2, "1d")
     spy_lows = data.history(stock, "low", 2*period + 2, "1d")
     spy_highest = spy_prices.rolling(window = period).max()    
     
-    spy_current = data.current(stock,"price")
-    
     #Williams Vix Fix Formula
     wvf = ((spy_highest - spy_lows)/(spy_highest)) * 100
     sDev = mult * np.std(wvf[-bbl:])
     midLine = np.mean(wvf[-bbl:])
-    lowerBand = midLine - sDev
     upperBand = midLine + sDev
     rangeHigh = (max(wvf[-lb:])) * ph
 
@@ -251,7 +318,160 @@ def spy_change_logic(context, data, stock):
     alert2 = not (wvf[-1] >= upperBand and wvf[-1] >= rangeHigh) and (wvf[-2] >= upperBand and wvf[-2] >= rangeHigh)
     
     return (alert2 or spy_higher_then_Xdays_back) and (spy_lower_then_longterm or spy_lower_then_midterm)
-    
+
+# def handle_data(context, data):  
+#     if 'mx_lvrg' not in context:             # Max leverage  
+#         context.mx_lvrg = 0                  # Init this instead in initialize() for better efficiency  
+#     if context.account.leverage > context.mx_lvrg:  
+#         context.mx_lvrg = context.account.leverage  
+#         #record(mx_lvrg = context.mx_lvrg)
+
+def handle_data(context, data):  
+    pvr(context, data)
+
+def pvr(context, data):  
+    ''' Custom chart and/or log of profit_vs_risk returns and related information  
+    '''  
+    # # # # # # # # # #  Options  # # # # # # # # # #  
+    record_pvr      = 1            # Profit vs Risk returns (percentage)  
+    record_pvrp     = 0            # PvR (p)roportional neg cash vs portfolio value  
+    record_cash     = 0            # Cash available  
+    record_max_lvrg = 1            # Maximum leverage encountered  
+    record_risk_hi  = 1            # Highest risk overall  
+    record_shorting = 0            # Total value of any shorts  
+    record_cash_low = 1            # Any new lowest cash level  
+    record_q_return = 0            # Quantopian returns (percentage)  
+    record_pnl      = 0            # Profit-n-Loss  
+    record_risk     = 0            # Risked, max cash spent or shorts beyond longs+cash  
+    record_leverage = 0            # Leverage (context.account.leverage)  
+    record_overshrt = 0            # Shorts beyond longs+cash  
+    logging         = 0            # Also to logging window conditionally (1) or not (0)  
+    if record_pvrp: record_pvr = 0 # if pvrp is active, straight pvr is off
+ 
+    c = context  # Brevity is the soul of wit -- Shakespeare [for efficiency, readability]  
+    if 'pvr' not in c:  
+        date_strt = get_environment('start').date()  
+        date_end  = get_environment('end').date()  
+        cash_low  = c.portfolio.starting_cash  
+        c.cagr    = 0.0  
+        c.pvr     = {  
+            'pvr'        : 0,      # Profit vs Risk returns based on maximum spent  
+            'max_lvrg'   : 0,  
+            'risk_hi'    : 0,  
+            'days'       : 0.0,  
+            'date_prv'   : '',  
+            'date_end'   : date_end,  
+            'cash_low'   : cash_low,  
+            'cash'       : cash_low,  
+            'start'      : cash_low,  
+            'begin'      : time.time(),  # For run time  
+            'log_summary': 126,          # Summary every x days  
+            'run_str'    : '{} to {}  ${}  {} US/Eastern'.format(date_strt, date_end, int(cash_low), datetime.now(timezone('US/Eastern')).strftime("%Y-%m-%d %H:%M"))  
+        }  
+        log.info(c.pvr['run_str'])
+
+    def _pvr_(c):  
+        c.cagr = ((c.portfolio.portfolio_value / c.pvr['start']) ** (1 / (c.pvr['days'] / 252.))) - 1  
+        ptype = 'PvR' if record_pvr else 'PvRp'  
+        log.info('{} {} %/day   cagr {}'.format(ptype, '%.4f' % (c.pvr['pvr'] / c.pvr['days']), '%.1f' % c.cagr))  
+        log.info('  Profited {} on {} activated/transacted for PvR of {}%'.format('%.0f' % (c.portfolio.portfolio_value - c.pvr['start']), '%.0f' % c.pvr['risk_hi'], '%.1f' % c.pvr['pvr']))  
+        log.info('  QRet {} PvR {} CshLw {} MxLv {} RskHi {} Shrts {}'.format('%.2f' % q_rtrn, '%.2f' % c.pvr['pvr'], '%.0f' % c.pvr['cash_low'], '%.2f' % c.pvr['max_lvrg'], '%.0f' % c.pvr['risk_hi'], '%.0f' % shorts))
+
+    def _minut():   # To preface each line with the minute of the day.  
+        dt = get_datetime().astimezone(timezone('US/Eastern'))  
+        minute = (dt.hour * 60) + dt.minute - 570  # (-570 = 9:31a)  
+        return str(minute).rjust(3)
+
+    date = get_datetime().date()  
+    if c.pvr['date_prv'] != date: c.pvr['days'] += 1.0  
+    do_summary = 0  
+    if c.pvr['log_summary'] and c.pvr['days'] % c.pvr['log_summary'] == 0 and _minut() == '100':  
+        do_summary = 1 # Log summary every x days  
+    c.pvr['date_prv'] = date    # next line for speed  
+    if c.pvr['cash'] == c.portfolio.cash and not do_summary and date != c.pvr['date_end']: return  
+    c.pvr['cash'] = c.portfolio.cash
+
+    longs         = 0                      # Longs  value  
+    shorts        = 0                      # Shorts value  
+    overshorts    = 0                      # Shorts value beyond longs plus cash  
+    new_cash_low  = 0                      # To trigger logging in cash_low case  
+    new_risk_hi   = 0  
+    q_rtrn        = 100 * (c.portfolio.portfolio_value - c.pvr['start']) / c.pvr['start']  
+    cash          = c.portfolio.cash  
+    cash_dip      = int(max(0, c.pvr['start'] - cash))  
+    if record_pvrp and cash < 0:    # Let negative cash ding less when portfolio is up.  
+        cash_dip = int(max(0, c.pvr['start'] - cash * c.pvr['start'] / c.portfolio.portfolio_value))  
+        # Imagine: Start with 10, grows to 1000, goes negative to -10, shud not be 200% risk.
+
+    if int(cash) < c.pvr['cash_low']:                # New cash low  
+        new_cash_low = 1  
+        c.pvr['cash_low']   = int(cash)  
+        if record_cash_low:  
+            record(CashLow = int(c.pvr['cash_low'])) # Lowest cash level hit
+
+    if record_max_lvrg:  
+        if c.account.leverage > c.pvr['max_lvrg']:  
+            c.pvr['max_lvrg'] = c.account.leverage  
+            record(MaxLv = c.pvr['max_lvrg'])        # Maximum leverage  
+            #log.info('Max Lvrg {}'.format('%.2f' % c.pvr['max_lvrg']))
+
+    for p in c.portfolio.positions:  
+        if not data.can_trade(p): continue  
+        shrs = c.portfolio.positions[p].amount  
+        if   shrs < 0: shorts += int(abs(shrs * data.current(p, 'price')))  
+        elif shrs > 0: longs  += int(    shrs * data.current(p, 'price'))
+
+    if shorts > longs + cash: overshorts = shorts             # Shorts when too high  
+    if record_overshrt: record(OvrShrt = overshorts)          # Shorts beyond payable  
+    if record_shorting: record(Shorts  = shorts)              # Shorts value as a positve  
+    if record_leverage: record(Lvrg = c.account.leverage)     # Leverage  
+    if record_cash:     record(Cash = int(cash))              # Cash
+
+    risk = int(max(cash_dip,   shorts))  
+    if record_risk: record(Risk = risk)       # Amount in play, maximum of shorts or cash used
+
+    if risk > c.pvr['risk_hi']:  
+        c.pvr['risk_hi'] = risk  
+        new_risk_hi = 1  
+        if record_risk_hi:  
+            record(RiskHi = c.pvr['risk_hi']) # Highest risk overall
+
+    if record_pnl:                            # "Profit and Loss" in dollars  
+        record(PnL = min(0, c.pvr['cash_low']) + context.portfolio.pnl )
+
+    if record_pvr or record_pvrp: # Profit_vs_Risk returns based on max amount actually spent (risk high)  
+        if c.pvr['risk_hi'] != 0: # Avoid zero-divide  
+            c.pvr['pvr'] = 100 * (c.portfolio.portfolio_value - c.pvr['start']) / c.pvr['risk_hi']  
+            ptype = 'PvRp' if record_pvrp else 'PvR'  
+            record(**{ptype: c.pvr['pvr']})
+
+    if record_q_return:  
+        record(QRet = q_rtrn)                 # Quantopian returns to compare to pvr returns curve
+
+    if logging:  
+        if new_risk_hi or new_cash_low:  
+            qret    = ' QRet '   + '%.1f' % q_rtrn  
+            lv      = ' Lv '     + '%.1f' % c.account.leverage if record_leverage else ''  
+            pvr     = ' PvR '    + '%.1f' % c.pvr['pvr']       if record_pvr      else ''  
+            pnl     = ' PnL '    + '%.0f' % c.portfolio.pnl    if record_pnl      else ''  
+            csh     = ' Cash '   + '%.0f' % cash               if record_cash     else ''  
+            shrt    = ' Shrt '   + '%.0f' % shorts             if record_shorting else ''  
+            ovrshrt = ' Shrt '   + '%.0f' % overshorts         if record_overshrt else ''  
+            risk    = ' Risk '   + '%.0f' % risk               if record_risk     else ''  
+            mxlv    = ' MaxLv '  + '%.2f' % c.pvr['max_lvrg']  if record_max_lvrg else ''  
+            csh_lw  = ' CshLw '  + '%.0f' % c.pvr['cash_low']  if record_cash_low else ''  
+            rsk_hi  = ' RskHi '  + '%.0f' % c.pvr['risk_hi']   if record_risk_hi  else ''  
+            log.info('{}{}{}{}{}{}{}{}{}{}{}{}'.format(_minut(), lv, mxlv, qret, pvr, pnl, csh, csh_lw, shrt, ovrshrt, risk, rsk_hi))  
+    if do_summary: _pvr_(c)  
+    if date == c.pvr['date_end']:        # Summary on last day once.  
+        if 'pvr_summary_done' not in c: c.pvr_summary_done = 0  
+        if not c.pvr_summary_done:  
+            _pvr_(c)  
+            elapsed = (time.time() - c.pvr['begin']) / 60  # minutes  
+            log.info( '{}\nRuntime {} hr {} min'.format(c.pvr['run_str'],  
+                int(elapsed / 60), '%.1f' % (elapsed % 60)))  
+            c.pvr_summary_done = 1
+
 def variance(x,*args):
     
     p = np.squeeze(np.asarray(args))
