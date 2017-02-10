@@ -4,6 +4,9 @@ import pandas as pd
 import time  
 from datetime import datetime  
 from pytz import timezone
+import talib
+import math
+from scipy import stats
 
 def initialize(context):
     set_slippage(slippage.FixedSlippage(spread=0))
@@ -11,16 +14,14 @@ def initialize(context):
     
     context.bullish_stock = sid(39214) #TQQQ
     context.bearish_stock = sid(38294) #TMF
-    context.small_cap_stock = sid(21508) #IJR
-    context.mid_cap_stock = sid(21507) #IJH then SCHM
     context.vxx = sid(38054) #VXX -> Vix Bull
     context.xiv = sid(40516) #XIV -> VIX Bear
+    context.safe_harbor_stock = sid(32841) #RHS
     
     context.stocks = [context.bullish_stock,
                       context.bearish_stock,
-                      context.small_cap_stock,
-                      context.mid_cap_stock,
-                      context.xiv]
+                      context.xiv
+                     ]
     context.n = 0
     context.s = np.zeros_like(context.stocks)
     context.x0 = np.zeros_like(context.stocks)
@@ -38,6 +39,12 @@ def initialize(context):
     
     context.RISK_LEVEL = 1.0
     context.PIGGY_BANK = 500
+    context.SAFE_HARBOR = 3000
+    context.CHG_PERIOD = 10
+    context.RAMOM_PERIOD = 14
+    context.MAX_LOSS = -.175
+    context.LOST_PAUSE_INTERVAL = 2
+    context.lost_pause_counter = 0
     context.is_first_of_week = False   
     context.is_trading_day = False   
     
@@ -62,8 +69,13 @@ def initialize(context):
     
     #Reporting
     context.total_trades = 0
+    context.vxx_wfv = 0
+    context.portfolio_tracker = []
+    
+    context.position_stats = pd.DataFrame(columns=["Days Held", "Avg Size"])
     
     schedule_function(record_leverage, date_rules.every_day(), time_rules.market_close())
+    schedule_function(record_portfolio_stats, date_rules.every_day(), time_rules.market_close(minutes=60))
     schedule_function(final_reporting, date_rules.every_day(), time_rules.market_close())
 
 def set_is_first_of_week(context, data):
@@ -71,23 +83,37 @@ def set_is_first_of_week(context, data):
 
 def set_is_trading_day(context, data):
     context.is_trading_day = True
+    
+    if context.safe_harbor_stock not in context.portfolio.positions:
+        order(context.safe_harbor_stock, int(context.SAFE_HARBOR/data.current(context.safe_harbor_stock, "price")))
 
+def record_portfolio_stats(context, data):
+    for pos in context.portfolio.positions:
+        if pos not in context.position_stats.index:
+            df = pd.DataFrame({"Days Held": 0, "Avg Size": 0.0}, index=[pos]);
+            context.position_stats = context.position_stats.append(df);
+        
+        context.position_stats.loc[pos]["Avg Size"] = ((context.position_stats.loc[pos]["Avg Size"] * context.position_stats.loc[pos]["Days Held"]) + get_position_size(context, data, pos))/(context.position_stats.loc[pos]["Days Held"] + 1)
+        context.position_stats.loc[pos]["Days Held"] += 1
+    
 def record_leverage(context, data):
-    #record(leverage = context.account.leverage)
-    #record(mx_lvrg = context.mx_lvrg)
     #record(cash = 1 if context.portfolio.cash < 0 else 0)
     #record(total_trades = context.total_trades)
 
     #context.mx_lvrg = 0
     context.is_trading_day = False
     context.is_first_of_week = False
-  
+
 def final_reporting(context, data):
     if len(context.weekly_buys) > 0 or len(context.spy_buys) > 0:
         log.info("Open Buy Orders")
     
     if is_date(2017, 1, 25):
         log.info("Total trades: %d" % context.total_trades)
+        
+        log.info ("\n%s" % "\n".join(["%s: Days Held: %d, Avg Size: %0.4f" % (stock.symbol, row["Days Held"], row["Avg Size"]) for stock, row in context.position_stats.iterrows()]))
+        # log.info("*************************************************************")
+        # log.info("\n")
     
 def place_order(context, data, stock, percent):
     shares = get_shares(context, data, stock, percent)
@@ -100,7 +126,7 @@ def place_order(context, data, stock, percent):
         context.total_trades += 1
     
     order_target_percent(stock, percent)
-    
+
 def get_shares(context, data, stock, percent):
     current_price = data.current(stock, "price")
     shares = int((context.portfolio.portfolio_value * percent)/current_price)
@@ -115,8 +141,14 @@ def get_position_size(context, data, stock):
     return (pos.amount * pos.last_sale_price) / context.portfolio.portfolio_value
 
 def get_target_position_size(context, data, position_size):
-    return ((context.portfolio.portfolio_value - context.PIGGY_BANK)/context.portfolio.portfolio_value)*position_size*context.RISK_LEVEL
+    return (get_adjusted_portfolio_size(context)/context.portfolio.portfolio_value)*position_size*context.RISK_LEVEL
 
+def get_adjusted_portfolio_size(context):
+    safe_harbor_value = context.portfolio.positions[context.safe_harbor_stock].amount * context.portfolio.positions[context.safe_harbor_stock].last_sale_price
+    # safe_harbor_value = 0
+    
+    return context.portfolio.portfolio_value - safe_harbor_value - context.PIGGY_BANK
+    
 def get_net_shares(context, data, stock, target_size):
     existing_shares = 0
     
@@ -193,19 +225,17 @@ def trade_weekly_sells(context, data):
     if is_date(2013, 12, 3) or get_open_orders():
         return
     
+    if context.lost_pause_counter > 0:
+        context.lost_pause_counter -= 1
+        return
+    
     for i,stock in enumerate(context.stocks):
-        if is_date(2011, 3, 1) and stock is context.mid_cap_stock:
-            context.mid_cap_stock = sid(40709)
-            context.stocks[i] = context.mid_cap_stock
-            place_order(context, data, stock, 0)
-            context.weekly_buys[context.mid_cap_stock] = get_target_position_size(context, data, allocation[i])
-        else:
-            net_shares = get_net_shares(context, data, stock, get_target_position_size(context, data, allocation[i]))
-            
-            if net_shares < 0:
-                place_order(context, data, stock, get_target_position_size(context, data, allocation[i]))
-            elif net_shares > 0:
-                context.weekly_buys[stock] = get_target_position_size(context, data, allocation[i])
+        net_shares = get_net_shares(context, data, stock, get_target_position_size(context, data, allocation[i]))
+
+        if net_shares < 0:
+            place_order(context, data, stock, get_target_position_size(context, data, allocation[i]))
+        elif net_shares > 0:
+            context.weekly_buys[stock] = get_target_position_size(context, data, allocation[i])
                        
     # log.info (", ".join(["%s %0.3f" % (stock.symbol, allocation[i]) for i,stock in enumerate(context.stocks)]))
     # log.info("*************************************************************")
@@ -220,7 +250,7 @@ def trade_weekly_buys(context, data):
         place_order(context, data, stock, context.weekly_buys[stock])
     
     context.weekly_buys = {}
-    
+
 def allocVOL(context, data):    
     if context.is_trading_day:
         return
@@ -244,16 +274,41 @@ def allocVOL(context, data):
     if(WVF[-2] > WFV_limit and WVF[-1] <= WFV_limit):
         order_target_percent(xiv, 0.00)   
 
+def get_ramom(context, prices):
+    X = range(0, len(prices))
+    # Y = np.log(prices)
+    Y = prices
+    a_s,b_s,r,tt,stderr=stats.linregress(X,Y)
+    
+    ramom = math.pow(1.0 + a_s, context.RAMOM_PERIOD) * r * r
+    
+    return ramom, a_s, r * r
+        
 def trade_spy_sell (context, data):  
+    # context.portfolio_tracker.append(get_adjusted_portfolio_size(context))
+    
+    # max_pv = np.max(context.portfolio_tracker)
+    # chg = (context.portfolio_tracker[-1] - max_pv)/max_pv
+    # if chg < context.MAX_LOSS and not context.is_trading_day:
+    #     log.info("%.3f%% loss" % context.MAX_LOSS)
+    #     context.lost_pause_counter = context.LOST_PAUSE_INTERVAL
+    #     context.portfolio_tracker = []
+        
+    #     for pos in context.portfolio.positions:
+    #         if pos != context.safe_harbor_stock:
+    #             order_target_percent(pos, 0)
+                
+    #     return
+                            
     if context.is_trading_day or context.is_first_of_week:
         return
     
     bullish_size = get_position_size(context, data, context.bullish_stock)
     bearish_size = get_position_size(context, data, context.bearish_stock)
 
-    spy_change = spy_change_logic(context, data, context.bullish_stock)
-    
-    if (spy_change and bearish_size > bullish_size) or (not spy_change and bullish_size > bearish_size):
+    bullish_change = spy_change_logic(context, data, context.bullish_stock)
+
+    if (bullish_change and bearish_size > bullish_size) or (not bullish_change and bullish_size > bearish_size):
         bearish_net_shares = get_net_shares(context, data, context.bearish_stock, bullish_size)
         bullish_net_shares = get_net_shares(context, data, context.bullish_stock, bearish_size)
         
@@ -263,11 +318,6 @@ def trade_spy_sell (context, data):
         elif bearish_net_shares < 0 and bullish_net_shares > 0:
             place_order(context, data, context.bearish_stock, bullish_size)
             context.spy_buys[context.bullish_stock] = bearish_size
-        elif (bearish_net_shares < 0 and bullish_net_shares < 0) or (bearish_net_shares < 0 and bullish_net_shares < 0):
-            place_order(context, data, context.bearish_stock, bullish_size)
-            place_order(context, data, context.bullish_stock, bearish_size) 
-        elif bearish_net_shares == 0 and bullish_net_shares != 0:
-            place_order(context, data, context.bullish_stock, bearish_size)
         elif bearish_net_shares != 0 and bullish_net_shares == 0:
             place_order(context, data, context.bearish_stock, bullish_size)
         
